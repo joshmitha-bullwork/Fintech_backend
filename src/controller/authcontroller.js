@@ -17,17 +17,21 @@ const transporter = nodemailer.createTransport({
 /**
  * Common configuration for cross-site cookies in production
  */
+/**
+ * Cookie options helper
+ * Works for localhost (HTTP) and production (HTTPS)
+ */
 const getCookieOptions = (maxAge, httpOnly = true) => {
   const isProduction = process.env.NODE_ENV === 'production';
   return {
-    httpOnly: httpOnly,
-    // CRITICAL FIX: Must be true for SameSite=None
-    secure: isProduction, 
-    // CRITICAL FIX: Must be 'None' for cross-site (subdomain) access
-    sameSite: isProduction ? 'None' : 'Lax',
-    maxAge: maxAge,
+    httpOnly,
+    secure: isProduction,     // must be true on Vercel HTTPS
+    sameSite: 'None',         // always None for cross-site cookies
+    path: '/',                // good practice for clarity
+    maxAge,
   };
 };
+
 
 /**
  * Middleware to verify the accessToken and attach user ID to req.user.
