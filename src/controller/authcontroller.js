@@ -2,7 +2,7 @@ const { PrismaClient } = require('@prisma/client');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
-const ms = require('ms'); // ✅ FIX: ms is properly required here
+const ms = require('ms');
 
 const prisma = new PrismaClient();
 
@@ -15,8 +15,22 @@ const transporter = nodemailer.createTransport({
 });
 
 /**
+ * Common configuration for cross-site cookies in production
+ */
+const getCookieOptions = (maxAge, httpOnly = true) => {
+  const isProduction = process.env.NODE_ENV === 'production';
+  return {
+    httpOnly: httpOnly,
+    // CRITICAL FIX: Must be true for SameSite=None
+    secure: isProduction, 
+    // CRITICAL FIX: Must be 'None' for cross-site (subdomain) access
+    sameSite: isProduction ? 'None' : 'Lax',
+    maxAge: maxAge,
+  };
+};
+
+/**
  * Middleware to verify the accessToken and attach user ID to req.user.
- * This is crucial for protected routes like getProfile.
  */
 exports.authMiddleware = (req, res, next) => {
   const accessToken = req.cookies.accessToken;
@@ -25,7 +39,7 @@ exports.authMiddleware = (req, res, next) => {
   }
   try {
     const decoded = jwt.verify(accessToken, process.env.JWT_ACCESS_SECRET);
-    req.user = { id: decoded.id }; // Attach user ID for protected routes
+    req.user = { id: decoded.id };
     next();
   } catch (error) {
     res.status(401).json({ message: 'Unauthorized: Invalid or expired access token.' });
@@ -77,18 +91,15 @@ exports.login = async (req, res) => {
       text: `Your OTP is ${otp}. It is valid for ${otpExpiryMinutes} minutes.`,
     });
     
-    // ✅ IMPROVEMENT: Use JWT_TEMP_SECRET for separation of concerns
+    // Use JWT_TEMP_SECRET for separation of concerns
     const tempTokenExpiry = '1d';
     const tempToken = jwt.sign({ email }, process.env.JWT_TEMP_SECRET, { 
         expiresIn: tempTokenExpiry
     });
+    const tempTokenMs = ms(tempTokenExpiry);
     
-    res.cookie('temp-token', tempToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax', 
-      maxAge: ms(tempTokenExpiry), // Use ms for consistency
-    });
+    // ✅ FIX APPLIED: Using common cookie options for cross-site access
+    res.cookie('temp-token', tempToken, getCookieOptions(tempTokenMs));
 
     res.status(200).json({ message: 'OTP sent to your email.' });
   } catch (error) {
@@ -106,7 +117,6 @@ exports.verifyOtp = async (req, res) => {
   }
 
   try {
-    // Note: The temporary token is verified against the TEMP_SECRET
     const decoded = jwt.verify(tempToken, process.env.JWT_TEMP_SECRET); 
     const { email } = decoded;
 
@@ -116,11 +126,8 @@ exports.verifyOtp = async (req, res) => {
     }
     
     // Clear the temporary cookie
-    res.clearCookie('temp-token', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
-    });
+    // ✅ FIX APPLIED: Use updated cookie options for clearing
+    res.clearCookie('temp-token', getCookieOptions(0));
 
     // 1. Generate Access Token (Short-lived)
     const accessExpiryTime = process.env.ACCESS_TOKEN_EXPIRY || '15m';
@@ -156,20 +163,12 @@ exports.verifyOtp = async (req, res) => {
     });
 
     // 4. Set Access Token as cookie
-    res.cookie('accessToken', accessToken, { 
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
-      maxAge: accessExpiryMs,
-    });
+    // ✅ FIX APPLIED: Using updated cookie options
+    res.cookie('accessToken', accessToken, getCookieOptions(accessExpiryMs));
     
     // 5. Set Refresh Token as cookie
-    res.cookie('refreshToken', refreshToken, { 
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
-      maxAge: refreshExpiryMs,
-    });
+    // ✅ FIX APPLIED: Using updated cookie options
+    res.cookie('refreshToken', refreshToken, getCookieOptions(refreshExpiryMs));
 
     res.status(200).json({ message: 'Verification successful.' });
   } catch (error) {
@@ -213,8 +212,9 @@ exports.refreshToken = async (req, res) => {
         where: { id: userId },
         data: { refreshTokenHash: null, refreshTokenExpiresAt: null },
       });
-      res.clearCookie('accessToken');
-      res.clearCookie('refreshToken');
+      // ✅ FIX APPLIED: Using updated cookie options for clearing
+      res.clearCookie('accessToken', getCookieOptions(0));
+      res.clearCookie('refreshToken', getCookieOptions(0));
       return res.status(403).json({ message: 'Forbidden: Invalid refresh token.' });
     }
     
@@ -224,8 +224,9 @@ exports.refreshToken = async (req, res) => {
         where: { id: userId },
         data: { refreshTokenHash: null, refreshTokenExpiresAt: null },
       });
-      res.clearCookie('accessToken');
-      res.clearCookie('refreshToken');
+      // ✅ FIX APPLIED: Using updated cookie options for clearing
+      res.clearCookie('accessToken', getCookieOptions(0));
+      res.clearCookie('refreshToken', getCookieOptions(0));
       return res.status(403).json({ message: 'Forbidden: Refresh token expired. Log in again.' });
     }
 
@@ -239,20 +240,17 @@ exports.refreshToken = async (req, res) => {
     const accessExpiryMs = ms(accessExpiryTime);
 
     // 6. Set the NEW Access Token cookie
-    res.cookie('accessToken', newAccessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
-      maxAge: accessExpiryMs,
-    });
+    // ✅ FIX APPLIED: Using updated cookie options
+    res.cookie('accessToken', newAccessToken, getCookieOptions(accessExpiryMs));
 
     res.status(200).json({ message: 'Access token refreshed successfully.' });
 
   } catch (error) {
     console.error('Refresh Token Error:', error);
     // Token verification failed (e.g., signature invalid)
-    res.clearCookie('accessToken');
-    res.clearCookie('refreshToken');
+    // ✅ FIX APPLIED: Using updated cookie options for clearing
+    res.clearCookie('accessToken', getCookieOptions(0));
+    res.clearCookie('refreshToken', getCookieOptions(0));
     res.status(403).json({ message: 'Forbidden: Invalid or manipulated token.' });
   }
 };
@@ -273,7 +271,7 @@ exports.checkAuthStatus = (req, res) => {
 };
 
 exports.getProfile = async (req, res) => {
-  // ✅ FIX: This route relies on req.user.id set by authMiddleware
+  // This route relies on req.user.id set by authMiddleware
   try {
     const userId = req.user.id; 
 
@@ -302,7 +300,7 @@ exports.logout = async (req, res) => {
   
   if (refreshToken) {
     try {
-      // ✅ SECURITY FIX: Use verify instead of decode to ensure the token is valid
+      // SECURITY FIX: Use verify instead of decode to ensure the token is valid
       const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
       
       // 1. Invalidate refresh token in DB
@@ -319,16 +317,11 @@ exports.logout = async (req, res) => {
   }
 
   // Clear both cookies
-  res.clearCookie('accessToken', {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
-  });
-  res.clearCookie('refreshToken', {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
-  });
+  // ✅ FIX APPLIED: Use updated cookie options for clearing
+  res.clearCookie('accessToken', getCookieOptions(0));
+  res.clearCookie('refreshToken', getCookieOptions(0));
   
   res.status(200).json({ message: 'Logged out successfully.' });
 };
+
+
