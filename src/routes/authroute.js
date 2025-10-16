@@ -8,7 +8,7 @@ const {
     logout, 
     getProfile, 
     refreshToken // Correctly imported
-} = require('../controller/autcontroller');
+} = require('../controller/authcontroller');
 const { protect } = require('../middleware/auth.middleware');
 
 const router = express.Router();
