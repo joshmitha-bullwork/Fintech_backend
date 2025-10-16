@@ -2,7 +2,7 @@ const { PrismaClient } = require('@prisma/client');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
-const ms = require('ms'); // Required for token expiry calculation
+const ms = require('ms'); // ✅ FIX: ms is properly required here
 
 const prisma = new PrismaClient();
 
@@ -13,6 +13,24 @@ const transporter = nodemailer.createTransport({
     pass: process.env.EMAIL_PASS,
   },
 });
+
+/**
+ * Middleware to verify the accessToken and attach user ID to req.user.
+ * This is crucial for protected routes like getProfile.
+ */
+exports.authMiddleware = (req, res, next) => {
+  const accessToken = req.cookies.accessToken;
+  if (!accessToken) {
+    return res.status(401).json({ message: 'Unauthorized: No access token provided.' });
+  }
+  try {
+    const decoded = jwt.verify(accessToken, process.env.JWT_ACCESS_SECRET);
+    req.user = { id: decoded.id }; // Attach user ID for protected routes
+    next();
+  } catch (error) {
+    res.status(401).json({ message: 'Unauthorized: Invalid or expired access token.' });
+  }
+};
 
 exports.register = async (req, res) => {
   const { name, email, phoneNumber } = req.body;
@@ -59,16 +77,17 @@ exports.login = async (req, res) => {
       text: `Your OTP is ${otp}. It is valid for ${otpExpiryMinutes} minutes.`,
     });
     
-    // Using JWT_ACCESS_SECRET for tempToken
-    const tempToken = jwt.sign({ email }, process.env.JWT_ACCESS_SECRET, { 
-        expiresIn: '1d'
+    // ✅ IMPROVEMENT: Use JWT_TEMP_SECRET for separation of concerns
+    const tempTokenExpiry = '1d';
+    const tempToken = jwt.sign({ email }, process.env.JWT_TEMP_SECRET, { 
+        expiresIn: tempTokenExpiry
     });
     
     res.cookie('temp-token', tempToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax', 
-      maxAge: 24 * 60 * 60 * 1000,
+      maxAge: ms(tempTokenExpiry), // Use ms for consistency
     });
 
     res.status(200).json({ message: 'OTP sent to your email.' });
@@ -87,7 +106,8 @@ exports.verifyOtp = async (req, res) => {
   }
 
   try {
-    const decoded = jwt.verify(tempToken, process.env.JWT_ACCESS_SECRET);
+    // Note: The temporary token is verified against the TEMP_SECRET
+    const decoded = jwt.verify(tempToken, process.env.JWT_TEMP_SECRET); 
     const { email } = decoded;
 
     const user = await prisma.user.findUnique({ where: { email } });
@@ -239,6 +259,7 @@ exports.refreshToken = async (req, res) => {
 
 
 exports.checkAuthStatus = (req, res) => {
+  // This route is now redundant if you use the authMiddleware for actual data retrieval
   const accessToken = req.cookies.accessToken;
   if (!accessToken) {
     return res.status(401).json({ message: 'Unauthorized: No access token provided.' });
@@ -252,8 +273,8 @@ exports.checkAuthStatus = (req, res) => {
 };
 
 exports.getProfile = async (req, res) => {
+  // ✅ FIX: This route relies on req.user.id set by authMiddleware
   try {
-    // The user ID is added to the request by your authentication middleware
     const userId = req.user.id; 
 
     const user = await prisma.user.findUnique({
@@ -281,8 +302,10 @@ exports.logout = async (req, res) => {
   
   if (refreshToken) {
     try {
+      // ✅ SECURITY FIX: Use verify instead of decode to ensure the token is valid
+      const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+      
       // 1. Invalidate refresh token in DB
-      const decoded = jwt.decode(refreshToken);
       if (decoded && decoded.id) {
         await prisma.user.update({
           where: { id: decoded.id },
@@ -290,7 +313,8 @@ exports.logout = async (req, res) => {
         });
       }
     } catch (error) {
-      console.error('Logout decode error:', error.message);
+      console.error('Logout token verification failed:', error.message);
+      // Even if verification fails, we still proceed to clear the user's cookies.
     }
   }
 
