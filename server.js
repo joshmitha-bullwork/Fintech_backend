@@ -1,7 +1,5 @@
 const express = require('express');
 const dotenv = require('dotenv');
-// NOTE: You are using Mongoose/MongoDB here, but Prisma in authController.js. 
-// This setup might cause conflicts. For now, we fix the routing issue.
 const mongoose = require('mongoose'); 
 const cookieParser = require('cookie-parser');
 const cors = require('cors'); 
@@ -17,21 +15,32 @@ const PORT = process.env.PORT || 5000;
 // ---------------------------------
 // CORS Configuration (Critical Fix)
 // ---------------------------------
+// ✅ FIX: Added the deployed Vercel frontend domains to allow cross-origin requests
 const allowedOrigins = [
-    'http://localhost:3000',
+    'http://localhost:3000', // Local development
+    'https://fintech-nine-eta.vercel.app', // Current Vercel frontend domain
+    'https://fintech-web-dashboard.vercel.app', // Target Vercel frontend domain
 ];
 
 const corsOptions = {
   origin: (origin, callback) => {
-    if (!origin) return callback(null, true);
+    // Allow requests with no origin (like Postman or server-to-server)
+    if (!origin) return callback(null, true); 
     
     if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      const msg = `The CORS policy for this site does not allow access from origin: ${origin}`;
+      console.error(msg);
+      // Return false to block the request
       return callback(new Error(msg), false);
     }
+    // Return true to allow the request
     return callback(null, true);
   },
-  credentials: true,
+  // ✅ FIX: Essential for sending cookies (access/refresh tokens)
+  credentials: true, 
+  // ✅ FIX: Essential for handling preflight requests (POST/PUT/DELETE)
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  optionsSuccessStatus: 200 // Use 200 for better compatibility
 };
 
 // Middleware
@@ -42,6 +51,8 @@ app.use(cookieParser());
 // MongoDB Connection
 const connectDB = async () => {
   try {
+    // NOTE: If you are using Prisma in your authController, ensure this Mongoose 
+    // connection is necessary, or remove it to avoid conflicts/redundancy.
     await mongoose.connect(process.env.DATABASE_URL); 
     console.log('✅ MongoDB connected successfully!');
   } catch (error) {
@@ -49,8 +60,6 @@ const connectDB = async () => {
     process.exit(1);
   }
 };
-// NOTE: Since your auth controller uses Prisma (and MongoDB URL), 
-// connecting Mongoose here might be redundant or conflicting.
 connectDB();
 
 // -----------------
@@ -59,8 +68,7 @@ connectDB();
 const authRoutes = require('./src/routes/authroute');
 app.use('/api/auth', authRoutes);
 
-// 💡 FIX 1: Use require() to import the ES module, then access the .default property.
-// The file src/routes/chat uses 'export default', which is imported as module.exports.default in CommonJS.
+// Fix 1: Use require() to import the ES module, then access the .default property.
 const chatModule = require('./src/routes/chat');
 const chatRoutes = chatModule.default || chatModule; 
 
